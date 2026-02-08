@@ -25,7 +25,7 @@ class OpenRouterBot(PoeBot):
         
         # Chọn model (Có thể đổi model khác ở đây)
         # Ví dụ: "openai/gpt-3.5-turbo" hoặc "meta-llama/llama-3-8b-instruct:free"
-        model_id = "meta-llama/llama-3-8b-instruct:free"
+        model_id = "openai/gpt-oss-120b"
 
         try:
             stream = await client.chat.completions.create(
