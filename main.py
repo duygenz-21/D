@@ -1,105 +1,93 @@
 import os
-import aiohttp
-import json
+import asyncio
+import httpx
+import io
 from fastapi_poe import PoeBot, make_app
-from fastapi_poe.types import ProtocolMessage
-from typing import AsyncIterable
+from openai import AsyncOpenAI
+from pypdf import PdfReader
+from docx import Document
 
-# Lấy Key từ biến môi trường
+# Lấy Key (Nhớ set env var nha sếp) 🔑
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 POE_ACCESS_KEY = os.environ.get("POE_ACCESS_KEY")
 
-# Cấu hình Model - dùng model đơn giản trước để test
-MODEL_ID = "openai/gpt-oss-120b"  # Đổi sang model ổn định hơn
-
 class OpenRouterBot(PoeBot):
-    async def get_response(self, request) -> AsyncIterable[ProtocolMessage]:
+    async def get_response(self, request):
+        if not OPENROUTER_API_KEY:
+            yield self.text_event("🆘 Lỗi: Quên chưa điền API Key OpenRouter rồi sếp ơi!")
+            return
+
+        client = AsyncOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+
+        # 1. Lấy tin nhắn mới nhất
+        last_message = request.query[-1]
+        user_text = last_message.content
+        
+        # 2. Xử lý file đính kèm (nếu có) 📂
+        file_content_context = ""
+        
+        for attachment in last_message.attachments:
+            try:
+                # Tải file về 📥
+                async with httpx.AsyncClient() as http_client:
+                    response = await http_client.get(attachment.url)
+                    response.raise_for_status()
+                    file_bytes = io.BytesIO(response.content)
+
+                # Xử lý theo từng loại file 🛠️
+                content_text = ""
+                filename = attachment.name.lower()
+
+                if filename.endswith(".pdf"):
+                    reader = PdfReader(file_bytes)
+                    for page in reader.pages:
+                        content_text += page.extract_text() + "\n"
+                        
+                elif filename.endswith(".docx"):
+                    doc = Document(file_bytes)
+                    content_text = "\n".join([para.text for para in doc.paragraphs])
+                    
+                elif filename.endswith((".txt", ".md")):
+                    content_text = response.content.decode("utf-8", errors="ignore")
+                
+                else:
+                    content_text = "[File này định dạng lạ quá, em đọc không được nha sếp!]"
+
+                # Gộp nội dung file vào context
+                if content_text.strip():
+                    file_content_context += f"\n\n--- Nội dung file '{attachment.name}': ---\n{content_text}\n"
+
+            except Exception as e:
+                file_content_context += f"\n[Lỗi khi đọc file {attachment.name}: {str(e)}]\n"
+
+        # 3. Tạo prompt cuối cùng gửi cho AI 🧠
+        # Kết hợp nội dung file + câu hỏi của user
+        final_prompt = f"{user_text}\n{file_content_context}"
+
+        # Chọn model (Lưu ý: Model này phải hỗ trợ context dài nếu file dài nha)
+        model_id = "openai/gpt-3.5-turbo" # Hoặc gpt-4o-mini cho rẻ mà khôn
+
         try:
-            # 1. Kiểm tra API Key
-            if not OPENROUTER_API_KEY:
-                yield self.text_event("🚨 Lỗi: Thiếu OpenRouter API Key!")
-                return
-
-            # 2. Lấy tin nhắn cuối
-            last_message = request.query[-1]
-            user_text = last_message.content or ""
-            
-            # 3. Chỉ xử lý text trước (đơn giản hóa)
-            if not user_text:
-                yield self.text_event("🤔 Xin lỗi, tôi chỉ hỗ trợ văn bản trong phiên bản này.")
-                return
-
-            # 4. Chuẩn bị headers cho OpenRouter
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://poe.com",
-                "X-Title": "Poe Bot"
-            }
-
-            # 5. Chuẩn bị payload
-            payload = {
-                "model": MODEL_ID,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "Bạn là trợ lý AI hữu ích. Trả lời ngắn gọn và thân thiện."
-                    },
-                    {
-                        "role": "user",
-                        "content": user_text
-                    }
+            stream = await client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    # System prompt để nhắc nó biết nhiệm vụ
+                    {"role": "system", "content": "Bạn là trợ lý AI hữu ích. Hãy trả lời câu hỏi dựa trên nội dung file được cung cấp (nếu có)."},
+                    {"role": "user", "content": final_prompt}
                 ],
-                "stream": True
-            }
+                stream=True
+            )
 
-            # 6. Gửi request đến OpenRouter
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers=headers,
-                    json=payload
-                ) as response:
+            async for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield self.text_event(chunk.choices[0].delta.content)
                     
-                    if response.status != 200:
-                        error_text = await response.text()
-                        yield self.text_event(f"🚨 Lỗi từ OpenRouter: {response.status}")
-                        return
-
-                    # 7. Xử lý stream response
-                    buffer = ""
-                    async for line in response.content:
-                        if line:
-                            line_str = line.decode('utf-8').strip()
-                            if line_str.startswith('data: '):
-                                data_str = line_str[6:]
-                                if data_str == '[DONE]':
-                                    break
-                                
-                                try:
-                                    data = json.loads(data_str)
-                                    if 'choices' in data and len(data['choices']) > 0:
-                                        delta = data['choices'][0].get('delta', {})
-                                        if 'content' in delta and delta['content']:
-                                            content = delta['content']
-                                            buffer += content
-                                            
-                                            # Flush buffer khi đủ dài hoặc có dấu câu
-                                            if len(buffer) > 50 or content in ['.', '!', '?', '\n']:
-                                                yield self.text_event(buffer)
-                                                buffer = ""
-                                except json.JSONDecodeError:
-                                    continue
-                    
-                    # Yield phần còn lại
-                    if buffer:
-                        yield self.text_event(buffer)
-
         except Exception as e:
-            # Log lỗi để debug
-            print(f"ERROR: {str(e)}")
-            yield self.text_event(f"⚠️ Có lỗi xảy ra: {str(e)[:100]}")
+            yield self.text_event(f"💥 Toang rồi sếp ơi: {str(e)}")
 
-# Khởi chạy bot
+# Khởi chạy bot 🚀
 bot = OpenRouterBot()
 app = make_app(bot, access_key=POE_ACCESS_KEY)
