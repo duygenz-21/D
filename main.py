@@ -68,7 +68,7 @@ class OpenRouterBot(PoeBot):
         final_prompt = f"{user_text}\n{file_content_context}"
 
         # Chọn model (Lưu ý: Model này phải hỗ trợ context dài nếu file dài nha)
-        model_id = "openai/gpt-3.5-turbo" # Hoặc gpt-4o-mini cho rẻ mà khôn
+        model_id = "xiaomi/mimo-v2-flash" # Hoặc gpt-4o-mini cho rẻ mà khôn
 
         try:
             stream = await client.chat.completions.create(
