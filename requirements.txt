@@ -1,5 +1,5 @@
 fastapi-poe
 openai
-fastapi
-uvicorn
-aiohttp
+httpx
+pypdf
+python-docx
