@@ -10,7 +10,7 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 POE_ACCESS_KEY = os.environ.get("POE_ACCESS_KEY")
 
 # Cấu hình Model - dùng model đơn giản trước để test
-MODEL_ID = "openai/gpt-3.5-turbo"  # Đổi sang model ổn định hơn
+MODEL_ID = "openai/gpt-oss-120b"  # Đổi sang model ổn định hơn
 
 class OpenRouterBot(PoeBot):
     async def get_response(self, request) -> AsyncIterable[ProtocolMessage]:
